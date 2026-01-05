@@ -12,7 +12,23 @@
 <body>
     <canvas id="game" width="1400" height="900"></canvas>
 
-<script src="../dist/modu.iife.js?v=dev"></script>
+<script>
+// Load SDK based on environment
+(function() {
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const script = document.createElement('script');
+    
+    if (isLocalhost) {
+        script.src = '../dist/modu.iife.js?v=dev';
+    } else {
+        // Use production CDN with dynamic version for cache busting
+        const version = Date.now();
+        script.src = `https://cdn.moduengine.com/modu-network.min.js?v=${version}`;
+    }
+    
+    document.head.appendChild(script);
+})();
+</script>
 <script>
 const canvas = document.getElementById('game');
 const WIDTH = canvas.width, HEIGHT = canvas.height;

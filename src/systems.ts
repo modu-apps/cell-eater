@@ -18,22 +18,51 @@ import {
     MIN_SPLIT_RADIUS,
     MAX_CELLS_PER_PLAYER,
     MERGE_DELAY_FRAMES,
+    MERGE_THRESHOLD,
+    SPLIT_IMPULSE,
+    SPLIT_DAMPING,
+    REPULSION_FACTOR,
+    REPULSION_BASE,
+    MOVE_DEADZONE,
     COLORS,
 } from './constants';
 
-// Track merge eligibility and split timing
+// Track merge eligibility
 export const cellMergeFrame = new Map<number, number>();
-export const cellSplitFrame = new Map<number, number>();
 
-// Helper functions
+// Helper: Get client ID string for deterministic sorting
 function getClientIdStr(game: modu.Game, numericId: number): string {
     return game.getClientIdString(numericId) || '';
 }
 
+// Helper: Compare strings for deterministic sorting
 function compareStrings(a: string, b: string): number {
     if (a < b) return -1;
     if (a > b) return 1;
     return 0;
+}
+
+// Helper: Group cells by player, sorted deterministically
+function getPlayerCellsGrouped(game: modu.Game): Map<number, modu.Entity[]> {
+    const playerCells = new Map<number, modu.Entity[]>();
+    const allCells = [...game.query('cell')].sort((a, b) => a.id - b.id);
+
+    for (const cell of allCells) {
+        if (cell.destroyed) continue;
+        const clientId = cell.get(modu.Player).clientId;
+        if (clientId === undefined || clientId === null) continue;
+        if (!playerCells.has(clientId)) playerCells.set(clientId, []);
+        playerCells.get(clientId)!.push(cell);
+    }
+
+    return playerCells;
+}
+
+// Helper: Get sorted player entries for deterministic iteration
+function getSortedPlayers(game: modu.Game, playerCells: Map<number, modu.Entity[]>): [number, modu.Entity[]][] {
+    return [...playerCells.entries()].sort((a, b) =>
+        compareStrings(getClientIdStr(game, a[0]), getClientIdStr(game, b[0]))
+    );
 }
 
 export function getPlayerCells(game: modu.Game, clientId: number): modu.Entity[] {
@@ -87,21 +116,11 @@ export function spawnCell(game: modu.Game, clientId: string, options: SpawnCellO
 export function setupSystems(game: modu.Game): void {
     // Movement system with integrated repulsion
     game.addSystem(() => {
-        const playerCells = new Map<number, modu.Entity[]>();
-        const allCells = [...game.query('cell')].sort((a, b) => a.id - b.id);
+        const playerCells = getPlayerCellsGrouped(game);
+        const sortedPlayers = getSortedPlayers(game, playerCells);
 
-        for (const cell of allCells) {
-            if (cell.destroyed) continue;
-            const cid = cell.get(modu.Player).clientId;
-            if (cid === undefined || cid === null) continue;
-            if (!playerCells.has(cid)) playerCells.set(cid, []);
-            playerCells.get(cid)!.push(cell);
-        }
-
+        // Calculate repulsion forces between sibling cells
         const repulsion = new Map<number, { vx: number; vy: number }>();
-        const sortedPlayers = [...playerCells.entries()].sort((a, b) =>
-            compareStrings(getClientIdStr(game, a[0]), getClientIdStr(game, b[0]))
-        );
 
         for (const [, siblings] of sortedPlayers) {
             for (const cell of siblings) {
@@ -129,7 +148,7 @@ export function setupSystems(game: modu.Game): void {
                     if (distSq < minDistSq && distSq > 1) {
                         const dist = Math.sqrt(distSq) || 1;
                         const overlap = minDist - dist;
-                        const pushForce = (overlap * 0.3) + 1;
+                        const pushForce = (overlap * REPULSION_FACTOR) + REPULSION_BASE;
                         const nx = dx / dist;
                         const ny = dy / dist;
 
@@ -144,8 +163,10 @@ export function setupSystems(game: modu.Game): void {
             }
         }
 
+        // Apply movement based on input
         for (const [clientId, cells] of sortedPlayers) {
             const playerInput = game.world.getInput(clientId);
+
             for (const cell of cells) {
                 const sprite = cell.get(modu.Sprite);
                 const transform = cell.get(modu.Transform2D);
@@ -157,15 +178,12 @@ export function setupSystems(game: modu.Game): void {
                     const tx = playerInput.target.x;
                     const ty = playerInput.target.y;
 
-                    // Skip if target coords are invalid
-                    if (!isFinite(tx) || !isFinite(ty)) {
-                        console.warn('Invalid target:', tx, ty);
-                    } else {
+                    if (isFinite(tx) && isFinite(ty)) {
                         const dx = tx - transform.x;
                         const dy = ty - transform.y;
                         const dist = Math.sqrt(dx * dx + dy * dy);
 
-                        if (dist > 5) {
+                        if (dist > MOVE_DEADZONE) {
                             vx = (dx / dist) * SPEED;
                             vy = (dy / dist) * SPEED;
                         }
@@ -179,11 +197,9 @@ export function setupSystems(game: modu.Game): void {
                     vy += rep.vy;
                 }
 
-                const splitFrame = cellSplitFrame.get(cell.id) || 0;
-                if (game.world.frame - splitFrame > 30) {
-                    body.setVelocity(vx, vy);
-                }
+                cell.setVelocity(vx, vy);
 
+                // Clamp to world bounds
                 const r = sprite.radius;
                 transform.x = Math.max(r, Math.min(WORLD_WIDTH - r, transform.x));
                 transform.y = Math.max(r, Math.min(WORLD_HEIGHT - r, transform.y));
@@ -201,20 +217,8 @@ export function setupSystems(game: modu.Game): void {
 
     // Split system
     game.addSystem(() => {
-        const playerCells = new Map<number, modu.Entity[]>();
-        const allCells = [...game.query('cell')].sort((a, b) => a.id - b.id);
-
-        for (const cell of allCells) {
-            if (cell.destroyed) continue;
-            const clientId = cell.get(modu.Player).clientId;
-            if (clientId === undefined || clientId === null) continue;
-            if (!playerCells.has(clientId)) playerCells.set(clientId, []);
-            playerCells.get(clientId)!.push(cell);
-        }
-
-        const sortedPlayers = [...playerCells.entries()].sort((a, b) =>
-            compareStrings(getClientIdStr(game, a[0]), getClientIdStr(game, b[0]))
-        );
+        const playerCells = getPlayerCellsGrouped(game);
+        const sortedPlayers = getSortedPlayers(game, playerCells);
 
         for (const [clientId, cells] of sortedPlayers) {
             const playerInput = game.world.getInput(clientId);
@@ -236,7 +240,7 @@ export function setupSystems(game: modu.Game): void {
                 const dy = playerInput.target.y - t.y;
                 const len = Math.sqrt(dx * dx + dy * dy) || 1;
 
-                // Halve radius
+                // Halve radius (area split in half)
                 const r = s.radius / Math.SQRT2;
                 s.radius = r;
                 b.radius = r;
@@ -244,7 +248,7 @@ export function setupSystems(game: modu.Game): void {
                 const clientIdStr = game.getClientIdString(clientId);
                 if (!clientIdStr) continue;
 
-                // Spawn new cell and apply impulse towards cursor
+                // Spawn new cell
                 const newCell = spawnCell(game, clientIdStr, {
                     x: t.x,
                     y: t.y,
@@ -252,16 +256,16 @@ export function setupSystems(game: modu.Game): void {
                     color: game.getString('color', s.color)
                 });
 
+                // Apply impulse towards cursor
                 const newBody = newCell.get(modu.Body2D);
-                newBody.impulseX = (dx / len) * 400;
-                newBody.impulseY = (dy / len) * 400;
-                newBody.damping = 0.05;
+                newBody.impulseX = (dx / len) * SPLIT_IMPULSE;
+                newBody.impulseY = (dy / len) * SPLIT_IMPULSE;
+                newBody.damping = SPLIT_DAMPING;
 
-                // Track timing
+                // Track merge timing
                 const mergeFrame = game.world.frame + MERGE_DELAY_FRAMES;
                 cellMergeFrame.set(cell.id, mergeFrame);
                 cellMergeFrame.set(newCell.id, mergeFrame);
-                cellSplitFrame.set(newCell.id, game.world.frame);
             }
         }
     }, { phase: 'update' });
@@ -269,24 +273,13 @@ export function setupSystems(game: modu.Game): void {
     // Merge system
     game.addSystem(() => {
         const currentFrame = game.world.frame;
-        const playerCells = new Map<number, modu.Entity[]>();
-        const allCells = [...game.query('cell')].sort((a, b) => a.id - b.id);
-
-        for (const cell of allCells) {
-            if (cell.destroyed) continue;
-            const clientId = cell.get(modu.Player).clientId;
-            if (clientId === undefined || clientId === null) continue;
-            if (!playerCells.has(clientId)) playerCells.set(clientId, []);
-            playerCells.get(clientId)!.push(cell);
-        }
-
-        const sortedPlayers = [...playerCells.entries()].sort((a, b) =>
-            compareStrings(getClientIdStr(game, a[0]), getClientIdStr(game, b[0]))
-        );
+        const playerCells = getPlayerCellsGrouped(game);
+        const sortedPlayers = getSortedPlayers(game, playerCells);
 
         for (const [, cells] of sortedPlayers) {
             if (cells.length < 2) continue;
 
+            // Sort by radius (largest first) for deterministic merge order
             cells.sort((a, b) => {
                 const radiusDiff = b.get(modu.Sprite).radius - a.get(modu.Sprite).radius;
                 return radiusDiff !== 0 ? radiusDiff : a.id - b.id;
@@ -303,6 +296,7 @@ export function setupSystems(game: modu.Game): void {
                     const cellB = cells[j];
                     if (cellB.destroyed) continue;
 
+                    // Check merge cooldown
                     const mergeFrameA = cellMergeFrame.get(cellA.id) || 0;
                     const mergeFrameB = cellMergeFrame.get(cellB.id) || 0;
                     if (currentFrame < mergeFrameA || currentFrame < mergeFrameB) continue;
@@ -313,9 +307,10 @@ export function setupSystems(game: modu.Game): void {
                     const dx = tA.x - tB.x;
                     const dy = tA.y - tB.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    const mergeThreshold = (sA.radius + sB.radius) * 0.5;
+                    const mergeThreshold = (sA.radius + sB.radius) * MERGE_THRESHOLD;
 
                     if (dist < mergeThreshold) {
+                        // Merge: combine areas
                         const areaA = sA.radius * sA.radius;
                         const areaB = sB.radius * sB.radius;
                         const newRadius = Math.min(Math.sqrt(areaA + areaB), MAX_RADIUS);

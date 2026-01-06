@@ -61,8 +61,14 @@ var CellEater = (() => {
   var MAX_FOOD = 1600;
   var FOOD_SPAWN_CHANCE = 0.15;
   var MIN_SPLIT_RADIUS = 15;
+  var SPLIT_IMPULSE = 800;
+  var SPLIT_DAMPING = 0.03;
   var MAX_CELLS_PER_PLAYER = 16;
   var MERGE_DELAY_FRAMES = 600;
+  var MERGE_THRESHOLD = 0.5;
+  var REPULSION_FACTOR = 0.3;
+  var REPULSION_BASE = 1;
+  var MOVE_DEADZONE = 5;
   var COLORS = [
     "#ff6b6b",
     "#ff8e72",
@@ -102,7 +108,6 @@ var CellEater = (() => {
   var import_modu_engine = __toESM(require_modu_engine());
   var modu2 = __toESM(require_modu_engine());
   var cellMergeFrame = /* @__PURE__ */ new Map();
-  var cellSplitFrame = /* @__PURE__ */ new Map();
   function getClientIdStr(game2, numericId) {
     return game2.getClientIdString(numericId) || "";
   }
@@ -112,6 +117,26 @@ var CellEater = (() => {
     if (a > b)
       return 1;
     return 0;
+  }
+  function getPlayerCellsGrouped(game2) {
+    const playerCells = /* @__PURE__ */ new Map();
+    const allCells = [...game2.query("cell")].sort((a, b) => a.id - b.id);
+    for (const cell of allCells) {
+      if (cell.destroyed)
+        continue;
+      const clientId = cell.get(modu2.Player).clientId;
+      if (clientId === void 0 || clientId === null)
+        continue;
+      if (!playerCells.has(clientId))
+        playerCells.set(clientId, []);
+      playerCells.get(clientId).push(cell);
+    }
+    return playerCells;
+  }
+  function getSortedPlayers(game2, playerCells) {
+    return [...playerCells.entries()].sort(
+      (a, b) => compareStrings(getClientIdStr(game2, a[0]), getClientIdStr(game2, b[0]))
+    );
   }
   function getPlayerCells(game2, clientId) {
     const cells = [];
@@ -156,22 +181,9 @@ var CellEater = (() => {
   }
   function setupSystems(game2) {
     game2.addSystem(() => {
-      const playerCells = /* @__PURE__ */ new Map();
-      const allCells = [...game2.query("cell")].sort((a, b) => a.id - b.id);
-      for (const cell of allCells) {
-        if (cell.destroyed)
-          continue;
-        const cid = cell.get(modu2.Player).clientId;
-        if (cid === void 0 || cid === null)
-          continue;
-        if (!playerCells.has(cid))
-          playerCells.set(cid, []);
-        playerCells.get(cid).push(cell);
-      }
+      const playerCells = getPlayerCellsGrouped(game2);
+      const sortedPlayers = getSortedPlayers(game2, playerCells);
       const repulsion = /* @__PURE__ */ new Map();
-      const sortedPlayers = [...playerCells.entries()].sort(
-        (a, b) => compareStrings(getClientIdStr(game2, a[0]), getClientIdStr(game2, b[0]))
-      );
       for (const [, siblings] of sortedPlayers) {
         for (const cell of siblings) {
           repulsion.set(cell.id, { vx: 0, vy: 0 });
@@ -194,7 +206,7 @@ var CellEater = (() => {
             if (distSq < minDistSq && distSq > 1) {
               const dist = (0, import_modu_engine.dSqrt)(distSq) || 1;
               const overlap = minDist - dist;
-              const pushForce = overlap * 0.3 + 1;
+              const pushForce = overlap * REPULSION_FACTOR + REPULSION_BASE;
               const nx = dx / dist;
               const ny = dy / dist;
               const repA = repulsion.get(cellA.id);
@@ -217,13 +229,11 @@ var CellEater = (() => {
           if (playerInput?.target) {
             const tx = playerInput.target.x;
             const ty = playerInput.target.y;
-            if (!isFinite(tx) || !isFinite(ty)) {
-              console.warn("Invalid target:", tx, ty);
-            } else {
+            if (isFinite(tx) && isFinite(ty)) {
               const dx = tx - transform.x;
               const dy = ty - transform.y;
               const dist = (0, import_modu_engine.dSqrt)(dx * dx + dy * dy);
-              if (dist > 5) {
+              if (dist > MOVE_DEADZONE) {
                 vx = dx / dist * SPEED;
                 vy = dy / dist * SPEED;
               }
@@ -234,10 +244,7 @@ var CellEater = (() => {
             vx += rep.vx;
             vy += rep.vy;
           }
-          const splitFrame = cellSplitFrame.get(cell.id) || 0;
-          if (game2.world.frame - splitFrame > 30) {
-            body.setVelocity(vx, vy);
-          }
+          cell.setVelocity(vx, vy);
           const r = sprite.radius;
           transform.x = Math.max(r, Math.min(WORLD_WIDTH - r, transform.x));
           transform.y = Math.max(r, Math.min(WORLD_HEIGHT - r, transform.y));
@@ -251,21 +258,8 @@ var CellEater = (() => {
       }
     }, { phase: "update" });
     game2.addSystem(() => {
-      const playerCells = /* @__PURE__ */ new Map();
-      const allCells = [...game2.query("cell")].sort((a, b) => a.id - b.id);
-      for (const cell of allCells) {
-        if (cell.destroyed)
-          continue;
-        const clientId = cell.get(modu2.Player).clientId;
-        if (clientId === void 0 || clientId === null)
-          continue;
-        if (!playerCells.has(clientId))
-          playerCells.set(clientId, []);
-        playerCells.get(clientId).push(cell);
-      }
-      const sortedPlayers = [...playerCells.entries()].sort(
-        (a, b) => compareStrings(getClientIdStr(game2, a[0]), getClientIdStr(game2, b[0]))
-      );
+      const playerCells = getPlayerCellsGrouped(game2);
+      const sortedPlayers = getSortedPlayers(game2, playerCells);
       for (const [clientId, cells] of sortedPlayers) {
         const playerInput = game2.world.getInput(clientId);
         if (!playerInput?.split || !playerInput?.target)
@@ -293,33 +287,19 @@ var CellEater = (() => {
             color: game2.getString("color", s.color)
           });
           const newBody = newCell.get(modu2.Body2D);
-          newBody.impulseX = dx / len * 400;
-          newBody.impulseY = dy / len * 400;
-          newBody.damping = 0.05;
+          newBody.impulseX = dx / len * SPLIT_IMPULSE;
+          newBody.impulseY = dy / len * SPLIT_IMPULSE;
+          newBody.damping = SPLIT_DAMPING;
           const mergeFrame = game2.world.frame + MERGE_DELAY_FRAMES;
           cellMergeFrame.set(cell.id, mergeFrame);
           cellMergeFrame.set(newCell.id, mergeFrame);
-          cellSplitFrame.set(newCell.id, game2.world.frame);
         }
       }
     }, { phase: "update" });
     game2.addSystem(() => {
       const currentFrame = game2.world.frame;
-      const playerCells = /* @__PURE__ */ new Map();
-      const allCells = [...game2.query("cell")].sort((a, b) => a.id - b.id);
-      for (const cell of allCells) {
-        if (cell.destroyed)
-          continue;
-        const clientId = cell.get(modu2.Player).clientId;
-        if (clientId === void 0 || clientId === null)
-          continue;
-        if (!playerCells.has(clientId))
-          playerCells.set(clientId, []);
-        playerCells.get(clientId).push(cell);
-      }
-      const sortedPlayers = [...playerCells.entries()].sort(
-        (a, b) => compareStrings(getClientIdStr(game2, a[0]), getClientIdStr(game2, b[0]))
-      );
+      const playerCells = getPlayerCellsGrouped(game2);
+      const sortedPlayers = getSortedPlayers(game2, playerCells);
       for (const [, cells] of sortedPlayers) {
         if (cells.length < 2)
           continue;
@@ -346,7 +326,7 @@ var CellEater = (() => {
             const dx = tA.x - tB.x;
             const dy = tA.y - tB.y;
             const dist = (0, import_modu_engine.dSqrt)(dx * dx + dy * dy);
-            const mergeThreshold = (sA.radius + sB.radius) * 0.5;
+            const mergeThreshold = (sA.radius + sB.radius) * MERGE_THRESHOLD;
             if (dist < mergeThreshold) {
               const areaA = sA.radius * sA.radius;
               const areaB = sB.radius * sB.radius;

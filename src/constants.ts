@@ -30,10 +30,16 @@ export const FOOD_SPAWN_CHANCE = 0.15;
 
 // Split mechanics
 export const MIN_SPLIT_RADIUS = 15;
-export const SPLIT_VELOCITY = 400;
-export const SPLIT_CONTROL_DELAY = 30;
+export const SPLIT_IMPULSE = 800;
+export const SPLIT_DAMPING = 0.03;
 export const MAX_CELLS_PER_PLAYER = 16;
 export const MERGE_DELAY_FRAMES = 600;
+export const MERGE_THRESHOLD = 0.5;
+
+// Physics
+export const REPULSION_FACTOR = 0.3;
+export const REPULSION_BASE = 1;
+export const MOVE_DEADZONE = 5;
 
 // Color palette
 export const COLORS = [
